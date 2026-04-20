@@ -880,6 +880,183 @@
   }
 </script>
 
+ // === Virtual Scroll State ===
+  
+  type VirtualPlaylistItem =
+    | { type: 'folder'; folder: PlaylistFolder; top: number; height: number }
+    | { type: 'playlist'; playlist: Playlist; top: number; height: number };
+    
+  let playlistScrollEl: HTMLDivElement | null = $state(null);
+  let playlistScrollTop = $state(0);
+  let playlistContainerHeight = $state(0);
+  
+  // Constants - tune based on your actual item heights
+  const PLAYLIST_ITEM_HEIGHT = 48; 
+  const FOLDER_HEADER_HEIGHT = 36;
+  const VIRTUAL_BUFFER_ITEMS = 15;
+
+  // Flattened virtual items for rendering
+  let virtualPlaylistItems = $derived.by(() => {
+    const items: VirtualPlaylistItem[] = [];
+    let currentTop = 0;
+    
+    // Add folders first (if folderMode is enabled)
+    if (folderMode && viewMode !== 'tree' && folders.length > 0) {
+      for (const folder of getSortedFolders()) {
+        const playlistCount = getPlaylistCountInFolder(folder.id);
+        
+        items.push({
+          type: 'folder',
+          folder,
+          top: currentTop,
+          height: FOLDER_HEADER_HEIGHT
+        });
+        
+        currentTop += FOLDER_HEADER_HEIGHT;
+      }
+    }
+    
+    // Add all playlists (filtered and sorted)
+    const filteredPlaylists = displayPlaylists || [];
+    
+    for (const playlist of filteredPlaylists) {
+      items.push({
+        type: 'playlist',
+        playlist,
+        top: currentTop,
+        height: PLAYLIST_ITEM_HEIGHT
+      });
+      
+      currentTop += PLAYLIST_ITEM_HEIGHT;
+    }
+    return items;
+  });
+
+  // Total scrollable height
+  let totalHeight = $derived(
+    virtualPlaylistItems.length > 0 
+      ? virtualPlaylistItems[virtualPlaylistItems.length - 1].top + 
+        virtualPlaylistItems[virtualPlaylistItems.length - 1].height 
+      : 0
+  );
+
+  // === Binary Search Functions ===
+  
+  function findFirstVisibleItem(): number {
+    if (virtualPlaylistItems.length === 0) return 0;
+    
+    const viewportTop = playlistScrollTop || 0;
+    let low = 0;
+    let high = virtualPlaylistItems.length - 1;
+    let result = 0;
+    
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const item = virtualPlaylistItems[mid];
+      
+      if (item.top + item.height > viewportTop) {
+        result = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    return Math.max(0, result);
+  }
+
+  function findLastVisibleItem(startIndex: number): number {
+    if (startIndex >= virtualPlaylistItems.length) return startIndex;
+    
+    const viewportBottom = playlistScrollTop + playlistContainerHeight;
+    let low = startIndex;
+    let high = virtualPlaylistItems.length - 1;
+    let result = high;
+    
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const item = virtualPlaylistItems[mid];
+      
+      if (item.top > viewportBottom) {
+        result = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    return Math.min(result, virtualPlaylistItems.length - 1);
+  }
+
+  // === Visible Items Calculation ===
+  
+  let visibleItems = $derived.by(() => {
+    if (virtualPlaylistItems.length === 0) return [];
+    
+    const firstIndex = findFirstVisibleItem();
+    const lastIndex = findLastVisibleItem(firstIndex);
+    
+    const startIdx = Math.max(0, firstIndex - VIRTUAL_BUFFER_ITEMS);
+    const endIdx = Math.min(virtualPlaylistItems.length - 1, lastIndex + VIRTUAL_BUFFER_ITEMS);
+    
+    return virtualPlaylistItems.slice(startIdx, endIdx + 1);
+  });
+
+  // === Scroll Handlers ===
+  
+  function handleScroll(e: Event) {
+    playlistScrollTop = (e.target as HTMLDivElement).scrollTop;
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (playlistScrollEl && e.deltaY !== 0) {
+      playlistScrollEl.scrollBy({ top: e.deltaY, behavior: 'smooth' });
+    }
+  }
+
+  // === Resize Observer ===
+  
+  $effect(() => {
+    if (!playlistScrollEl) return;
+    
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        playlistContainerHeight = entry.contentRect.height;
+      }
+    });
+    
+    observer.observe(playlistScrollEl);
+    return () => observer.disconnect();
+  });
+
+// === Virtual Scroll Helpers ===
+  
+  function getFolderIcon(folder: PlaylistFolder) {
+    if (folder.icon_type === 'custom' && folder.custom_image_path) return '🖼️';
+    switch (folder.icon_preset) {
+      case 'heart': return '❤️';
+      case 'star': return '⭐';
+      case 'music': return '🎵';
+      case 'disc': return '💿';
+      case 'library': return '📚';
+      default: return '📁';
+    }
+  }
+
+  function getPlaylistIcon(playlist: Playlist) {
+    if (playlist.images && playlist.images.length > 0) return '🎨';
+    return '🎵';
+  }
+
+  function handlePlaylistClick(id: number) {
+    onPlaylistSelect?.(id);
+  }
+
+  function handlePlaylistContextMenu(e: Event, playlist: Playlist) {
+    e.preventDefault();
+    console.log('Context menu for', playlist.name);
+    // Implement context menu logic here
+  }
+  </script>
+
 <ViewTransition duration={200} distance={12} direction="down">
 <div class="playlist-manager">
   <button class="back-btn" onclick={onBack}>
@@ -1205,408 +1382,441 @@
     {/if}
 
     <!-- Playlists Section -->
-    {#if displayPlaylists.length === 0 && (currentFolderId || folders.length === 0)}
-      <div class="empty">
-        <p>{filter === 'hidden' ? 'No hidden playlists' : filter === 'visible' ? 'No visible playlists' : currentFolderId ? 'No playlists in this folder' : 'No playlists yet'}</p>
-      </div>
-    {:else if displayPlaylists.length > 0}
-      {#if folderMode && viewMode !== 'tree' && !currentFolderId && folders.length > 0}
-        <div class="section-header-btn playlists-section-header">
-          <span class="section-title">Playlists ({displayPlaylists.length})</span>
-        </div>
-      {/if}
-
-      {#if viewMode === 'grid'}
-    <!-- Grid View -->
-    <div class="grid">
-      {#each displayPlaylists as playlist (playlist.id)}
-        {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
-        {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
-        {@const localStatus = getLocalContentStatus(playlist.id)}
-        {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="grid-item"
-          class:hidden={isHidden}
-          class:unavailable={isUnavailable}
-          class:dragging={draggedId === playlist.id}
-          class:drag-over={dragOverId === playlist.id}
-          class:absorbing={absorbingPlaylistId === playlist.id}
-          draggable={sort === 'custom' && !isUnavailable}
-          ondragstart={(e) => !isUnavailable && handleDragStart(e, playlist.id)}
-          ondragover={(e) => !isUnavailable && handleDragOver(e, playlist.id)}
-          ondragleave={handleDragLeave}
-          ondrop={(e) => !isUnavailable && handleDrop(e, playlist.id)}
-          ondragend={handleDragEnd}
-        >
-          <!-- Top row: reorder controls (when in custom sort mode) -->
-          {#if sort === 'custom' && !isUnavailable}
-            {@const playlistIndex = displayPlaylistIndexMap.get(playlist.id) ?? 0}
-            <div class="grid-item-header">
-              <div class="reorder-controls">
-                <button
-                  class="reorder-btn"
-                  onclick={(e) => { e.stopPropagation(); movePlaylistUp(playlist.id); }}
-                  disabled={playlistIndex === 0}
-                  title={ $t('favorites.moveUp') }
-                >
-                  <ChevronUp size={14} />
-                </button>
-                <div class="drag-handle">
-                  <GripVertical size={14} />
+{#if loading}
+  <div class="loading" class:fading={spinnerFading}>
+    <div class="spinner"></div>
+    <p>{$t('toast.loadingPlaylists')}</p>
+  </div>
+{:else if virtualPlaylistItems.length === 0 && (currentFolderId || folders.length === 0)}
+  <div class="empty">
+    {filter === 'hidden' ? 'No hidden playlists' : filter === 'visible' ? 'No visible playlists' : currentFolderId ? 'No playlists in this folder' : 'No playlists yet'}
+  </div>
+{:else if virtualPlaylistItems.length > 0}
+  
+  <!-- Virtual Scroll Container -->
+  <div 
+    bind:this={playlistScrollEl}
+    onscroll={handleScroll}
+    onwheel={handleWheel}
+    class="virtual-scroll-container"
+    style={`height: ${playlistContainerHeight}px;`}
+  >
+    {#if viewMode === 'tree'}
+      <!-- Tree View (no virtual scrolling) -->
+      <div class="tree">
+        {#each treeNodes as node}
+          {#if node.type === 'folder'}
+            <div class="tree-folder">
+              <button class="tree-folder-header" onclick={() => toggleTreeFolder(node.folder.id)}>
+                {#if treeFolderExpanded.has(node.folder.id)}
+                  <ChevronDown size={14} class="tree-chevron" />
+                {:else}
+                  <ChevronRight size={14} class="tree-chevron" />
+                {/if}
+                <div class="tree-folder-icon" style={node.folder.icon_color ? `background: ${node.folder.icon_color};` : ''}>
+                  {#if node.folder.icon_type === 'custom' && node.folder.custom_image_path}
+                    <img src={node.folder.custom_image_path} alt="" class="tree-folder-img" />
+                  {:else if node.folder.icon_preset === 'heart'}
+                    <Heart size={16} />
+                  {:else if node.folder.icon_preset === 'star'}
+                    <Star size={16} />
+                  {:else if node.folder.icon_preset === 'music'}
+                    <Music size={16} />
+                  {:else if node.folder.icon_preset === 'disc'}
+                    <Disc size={16} />
+                  {:else if node.folder.icon_preset === 'library'}
+                    <Library size={16} />
+                  {:else}
+                    <Folder size={16} />
+                  {/if}
                 </div>
-                <button
-                  class="reorder-btn"
-                  onclick={(e) => { e.stopPropagation(); movePlaylistDown(playlist.id); }}
-                  disabled={playlistIndex === displayPlaylists.length - 1}
-                  title={ $t('favorites.moveDown') }
-                >
-                  <ChevronDown size={14} />
-                </button>
+                <span class="tree-folder-name">{node.folder.name}</span>
+                <span class="tree-folder-count">{node.playlists.length}</span>
+              </button>
+              {#if treeFolderExpanded.has(node.folder.id)}
+                <div class="tree-children">
+                  {#each node.playlists as playlist (playlist.id)}
+                    {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
+                    {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
+                    {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
+                    <div
+                      class="tree-item"
+                      class:hidden={isHidden}
+                      class:unavailable={isUnavailable}
+                      role="button"
+                      tabindex="0"
+                      onclick={() => onPlaylistSelect?.(playlist.id)}
+                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
+                    >
+                      <div class="tree-item-artwork">
+                        <PlaylistCollage artworks={playlist.images ?? []} size={32} />
+                      </div>
+                      <div class="tree-item-info">
+                        <span class="tree-item-name">{playlist.name}</span>
+                        <span class="tree-item-meta">{getTotalTrackCount(playlist)} {$t('playlist.tracks')}</span>
+                      </div>
+                      {#if !isUnavailable}
+                        <div class="tree-item-actions">
+                          <button
+                            class="favorite-btn"
+                            class:is-active={isFavorite}
+                            onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
+                            title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
+                          >
+                            <Heart size={12} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
+                          </button>
+                          <button
+                            class="visibility-btn"
+                            class:is-hidden={isHidden}
+                            onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
+                            title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
+                          >
+                            {#if isHidden}
+                              <EyeOff size={12} />
+                            {:else}
+                              <Eye size={12} />
+                            {/if}
+                          </button>
+                          <button
+                            class="edit-btn"
+                            onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
+                            title={$t('playlist.editPlaylist')}
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <!-- Root-level playlist -->
+            {@const playlist = node.playlist}
+            {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
+            {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
+            {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
+            <div
+              class="tree-item root"
+              class:hidden={isHidden}
+              class:unavailable={isUnavailable}
+              role="button"
+              tabindex="0"
+              onclick={() => onPlaylistSelect?.(playlist.id)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
+            >
+              <div class="tree-item-artwork">
+                <PlaylistCollage artworks={playlist.images ?? []} size={32} />
               </div>
+              <div class="tree-item-info">
+                <span class="tree-item-name">{playlist.name}</span>
+                <span class="tree-item-meta">{getTotalTrackCount(playlist)} {$t('playlist.tracks')}</span>
+              </div>
+              {#if !isUnavailable}
+                <div class="tree-item-actions">
+                  <button
+                    class="favorite-btn"
+                    class:is-active={isFavorite}
+                    onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
+                    title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
+                  >
+                    <Heart size={12} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
+                  </button>
+                  <button
+                    class="visibility-btn"
+                    class:is-hidden={isHidden}
+                    onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
+                    title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
+                  >
+                    {#if isHidden}
+                      <EyeOff size={12} />
+                    {:else}
+                      <Eye size={12} />
+                    {/if}
+                  </button>
+                  <button
+                    class="edit-btn"
+                    onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
+                    title={$t('playlist.editPlaylist')}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              {/if}
             </div>
           {/if}
+        {/each}
+      </div>
+    {:else if folderMode && viewMode !== 'tree' && !currentFolderId && folders.length > 0}
+      <!-- Folders Section (virtual scroll) -->
+      <div class="folders-section">
+        <button
+          class="section-header-btn"
+          onclick={() => foldersCollapsed = !foldersCollapsed}
+        >
+          <span class="section-title">{$t('playlist.folders')} ({folders.length})</span>
+          <span class="info-icon" title="To drag playlists into folders, enable Custom sort order">
+            <Info size={12} />
+          </span>
+          {#if foldersCollapsed}
+            <ChevronRight size={14} />
+          {:else}
+            <ChevronDown size={14} />
+          {/if}
+        </button>
 
-          <!-- Clickable area: artwork + info -->
-          <div
-            class="grid-item-content"
-            role="button"
-            tabindex="0"
-            onclick={() => onPlaylistSelect?.(playlist.id)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
-            title={isUnavailable ? $t('offline.viewOnly') : undefined}
-          >
-            <div class="artwork">
-              <PlaylistCollage artworks={playlist.images ?? []} size={140} />
-              {#if localStatus === 'all_local'}
-                <div class="local-badge all" title={$t('offline.allLocal')}>
-                  <Wifi size={12} />
-                </div>
-              {:else if localStatus === 'some_local'}
-                <div class="local-badge partial" title={$t('offline.someLocal')}>
-                  <Cloud size={12} />
-                </div>
-              {/if}
-            </div>
-            <div class="info">
-              <span class="name">{playlist.name}</span>
-            </div>
-          </div>
-
-          <!-- Footer: meta + action buttons inline -->
-          <div class="grid-item-footer">
-            <span class="meta">{getTotalTrackCount(playlist)} {$t('playlist.tracks')}{#if getLocalTrackCount(playlist.id) > 0} <span class="local-count">({getLocalTrackCount(playlist.id)} local)</span>{/if}</span>
-            {#if !isUnavailable}
-              <div class="footer-actions">
-                <button
-                  class="favorite-btn"
-                  class:is-active={isFavorite}
-                  onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
-                  title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
+        {#if !foldersCollapsed}
+          {#if viewMode === 'grid'}
+            <div class="folders-grid">
+              {#each folders as folder (folder.id)}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="folder-card"
+                  class:drag-over={dragOverFolderId === folder.id}
+                  class:absorbing={absorbingToFolderId === folder.id}
+                  ondragover={(e) => handleFolderDragOver(e, folder.id)}
+                  ondragleave={handleFolderDragLeave}
+                  ondrop={(e) => handleFolderDrop(e, folder.id)}
                 >
-                  <Heart size={12} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
-                </button>
-                <button
-                  class="visibility-btn"
-                  class:is-hidden={isHidden}
-                  onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
-                  title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
-                >
-                  {#if isHidden}
-                    <EyeOff size={12} />
-                  {:else}
-                    <Eye size={12} />
-                  {/if}
-                </button>
-                <button
-                  class="edit-btn"
-                  onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
-                  title={ $t('playlist.editPlaylist') }
-                >
-                  <Pencil size={12} />
-                </button>
-              </div>
-            {:else}
-              <span class="view-only-badge" title={$t('offline.viewOnly')}>
-                <CloudOff size={12} />
-              </span>
-            {/if}
-          </div>
-        </div>
-      {/each}
-    </div>
-  {:else if viewMode === 'tree'}
-    <!-- Tree View -->
-    <div class="tree">
-      {#each treeNodes as node}
-        {#if node.type === 'folder'}
-          <div class="tree-folder">
-            <button class="tree-folder-header" onclick={() => toggleTreeFolder(node.folder.id)}>
-              {#if treeFolderExpanded.has(node.folder.id)}
-                <ChevronDown size={14} class="tree-chevron" />
-              {:else}
-                <ChevronRight size={14} class="tree-chevron" />
-              {/if}
-              <div class="tree-folder-icon" style={node.folder.icon_color ? `background: ${node.folder.icon_color};` : ''}>
-                {#if node.folder.icon_type === 'custom' && node.folder.custom_image_path}
-                  <img src={node.folder.custom_image_path} alt="" class="tree-folder-img" />
-                {:else if node.folder.icon_preset === 'heart'}
-                  <Heart size={16} />
-                {:else if node.folder.icon_preset === 'star'}
-                  <Star size={16} />
-                {:else if node.folder.icon_preset === 'music'}
-                  <Music size={16} />
-                {:else if node.folder.icon_preset === 'disc'}
-                  <Disc size={16} />
-                {:else if node.folder.icon_preset === 'library'}
-                  <Library size={16} />
-                {:else}
-                  <Folder size={16} />
-                {/if}
-              </div>
-              <span class="tree-folder-name">{node.folder.name}</span>
-              <span class="tree-folder-count">{node.playlists.length}</span>
-            </button>
-            {#if treeFolderExpanded.has(node.folder.id)}
-              <div class="tree-children">
-                {#each node.playlists as playlist (playlist.id)}
-                  {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
-                  {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
-                  {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
                   <div
-                    class="tree-item"
-                    class:hidden={isHidden}
-                    class:unavailable={isUnavailable}
+                    class="folder-card-content"
                     role="button"
                     tabindex="0"
-                    onclick={() => onPlaylistSelect?.(playlist.id)}
-                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
+                    onclick={() => navigateToFolder(folder.id)}
+                    onkeydown={(e) => e.key === 'Enter' && navigateToFolder(folder.id)}
                   >
-                    <div class="tree-item-artwork">
-                      <PlaylistCollage artworks={playlist.images ?? []} size={32} />
+                    <div class="folder-icon" style={folder.icon_color ? `background: ${folder.icon_color};` : ''}>
+                      {#if folder.icon_type === 'custom' && folder.custom_image_path}
+                        <img src={folder.custom_image_path} alt="" class="folder-custom-img" />
+                      {:else if folder.icon_preset === 'heart'}
+                        <Heart size={32} />
+                      {:else if folder.icon_preset === 'star'}
+                        <Star size={32} />
+                      {:else if folder.icon_preset === 'music'}
+                        <Music size={32} />
+                      {:else if folder.icon_preset === 'disc'}
+                        <Disc size={32} />
+                      {:else if folder.icon_preset === 'library'}
+                        <Library size={32} />
+                      {:else}
+                        <Folder size={32} />
+                      {/if}
                     </div>
-                    <div class="tree-item-info">
-                      <span class="tree-item-name">{playlist.name}</span>
-                      <span class="tree-item-meta">{getTotalTrackCount(playlist)} {$t('playlist.tracks')}</span>
-                    </div>
-                    {#if !isUnavailable}
-                      <div class="tree-item-actions">
-                        <button
-                          class="favorite-btn"
-                          class:is-active={isFavorite}
-                          onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
-                          title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
-                        >
-                          <Heart size={12} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
-                        </button>
-                        <button
-                          class="visibility-btn"
-                          class:is-hidden={isHidden}
-                          onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
-                          title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
-                        >
-                          {#if isHidden}
-                            <EyeOff size={12} />
-                          {:else}
-                            <Eye size={12} />
-                          {/if}
-                        </button>
-                        <button
-                          class="edit-btn"
-                          onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
-                          title={$t('playlist.editPlaylist')}
-                        >
-                          <Pencil size={12} />
-                        </button>
-                      </div>
+                    <span class="folder-name">{folder.name}</span>
+                    <span class="folder-count">{getPlaylistCountInFolder(folder.id)} {$t('playlist.playlists')}</span>
+                  </div>
+                  <button
+                    class="folder-edit-btn"
+                    onclick={(e) => { e.stopPropagation(); openEditFolderModal(folder); }}
+                    title={$t('library.editFolder')}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <!-- List view folders (compact) -->
+            <div class="folders-list">
+              {#each folders as folder (folder.id)}
+                <div
+                  class="folder-list-item"
+                  class:drag-over={dragOverFolderId === folder.id}
+                  class:absorbing={absorbingToFolderId === folder.id}
+                  ondragover={(e) => handleFolderDragOver(e, folder.id)}
+                  ondragleave={handleFolderDragLeave}
+                  ondrop={(e) => handleFolderDrop(e, folder.id)}
+                  role="button"
+                  tabindex="0"
+                  onclick={() => navigateToFolder(folder.id)}
+                  onkeydown={(e) => e.key === 'Enter' && navigateToFolder(folder.id)}
+                >
+                  <div class="folder-list-icon" style={folder.icon_color ? `background: ${folder.icon_color};` : ''}>
+                    {#if folder.icon_type === 'custom' && folder.custom_image_path}
+                      <img src={folder.custom_image_path} alt="" class="folder-list-img" />
+                    {:else if folder.icon_preset === 'heart'}
+                      <Heart size={20} />
+                    {:else if folder.icon_preset === 'star'}
+                      <Star size={20} />
+                    {:else if folder.icon_preset === 'music'}
+                      <Music size={20} />
+                    {:else if folder.icon_preset === 'disc'}
+                      <Disc size={20} />
+                    {:else if folder.icon_preset === 'library'}
+                      <Library size={20} />
+                    {:else}
+                      <Folder size={20} />
                     {/if}
                   </div>
-                {/each}
-                {#if node.playlists.length === 0}
-                  <div class="tree-empty">{$t('playlistManager.emptyFolder')}</div>
-                {/if}
+                  <span class="folder-list-name">{folder.name}</span>
+                  <span class="folder-list-count">{getPlaylistCountInFolder(folder.id)}</span>
+                  <button
+                    class="folder-list-edit"
+                    onclick={(e) => { e.stopPropagation(); openEditFolderModal(folder); }}
+                    title={$t('library.editFolder')}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Virtual Items Layer -->
+    <div 
+      class="virtual-items-layer"
+      style={`transform: translateY(-${playlistScrollTop}px);`}
+    >
+      {#each visibleItems as item, index}
+        {#if item.type === 'folder'}
+          <div class="virtual-folder-item">
+            <button 
+              class="folder-header-btn"
+              onclick={() => toggleTreeFolder(item.folder.id)}
+            >
+              <span class="folder-icon">{getFolderIcon(item.folder)}</span>
+              <span>{item.folder.name}</span>
+              <span class="playlist-count">({getPlaylistCountInFolder(item.folder.id)})</span>
+            </button>
+          </div>
+        {:else if item.type === 'playlist'}
+          <div 
+            class="virtual-playlist-item"
+            data-playlist-id={item.playlist.id}
+          >
+            {#snippet playlistContent()}
+              <div class="playlist-row">
+                <button 
+                  class="playlist-icon-btn"
+                  onclick={() => onPlaylistSelect?.(item.playlist.id)}
+                >
+                  <span>{getPlaylistIcon(item.playlist)}</span>
+                </button>
+                
+                <div class="playlist-info">
+                  <div class="playlist-name">{item.playlist.name}</div>
+                  {#if item.playlist.tracks_count}
+                    <div class="playlist-meta">
+                      {item.playlist.tracks_count} tracks • 
+                      {(item.playlist.duration / 60).toFixed(1)} min
+                    </div>
+                  {/if}
+                </div>
+                <!-- Actions -->
+                <div class="playlist-actions">
+                  <button 
+                    class="favorite-btn"
+                    onclick={() => toggleFavorite(item.playlist)}
+                  >
+                    {#if (playlistSettings.get(item.playlist.id)?.is_favorite ?? false)}
+                      ★
+                    {:else}
+                      ☆
+                    {/if}
+                  </button>
+                  
+                  <div class="dropdown-menu">
+                    <button onclick={() => openEditModal(item.playlist)}>✏️</button>
+                    <button onclick={(e) => handlePlaylistContextMenu(e, item.playlist)}>⋮</button>
+                  </div>
+                </div>
+              </div>
+            {/snippet}
+
+            <!-- Desktop List View -->
+            {#if viewMode === 'list'}
+              <div class="playlist-row desktop">
+                <div class="playlist-icon">{getPlaylistIcon(item.playlist)}</div>
+                <div class="playlist-details">
+                  <div class="name">{item.playlist.name}</div>
+                  <div class="meta">
+                    {item.playlist.tracks_count} tracks • 
+                    {(item.playlist.duration / 60).toFixed(1)} min
+                  </div>
+                </div>
+                
+                <!-- Quick actions -->
+                <div class="quick-actions">
+                  <button 
+                    onclick={() => onPlaylistSelect?.(item.playlist.id)}
+                    class="play-btn"
+                  >
+                    ▶ Play
+                  </button>
+                  
+                  <button 
+                    onclick={() => toggleFavorite(item.playlist)}
+                    class={playlistSettings.get(item.playlist.id)?.is_favorite ? 'favorite' : ''}
+                  >
+                    {#if (playlistSettings.get(item.playlist.id)?.is_favorite ?? false)}★{:else}☆{/if}
+                  </button>
+                  
+                  <div class="more-menu">
+                    <button onclick={() => openEditModal(item.playlist)}>Edit</button>
+                    <button onclick={(e) => handlePlaylistContextMenu(e, item.playlist)}>⋮</button>
+                  </div>
+                </div>
               </div>
             {/if}
-          </div>
-        {:else}
-          <!-- Root-level playlist (no folder) -->
-          {@const playlist = node.playlist}
-          {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
-          {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
-          {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
-          <div
-            class="tree-item root"
-            class:hidden={isHidden}
-            class:unavailable={isUnavailable}
-            role="button"
-            tabindex="0"
-            onclick={() => onPlaylistSelect?.(playlist.id)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
-          >
-            <div class="tree-item-artwork">
-              <PlaylistCollage artworks={playlist.images ?? []} size={32} />
-            </div>
-            <div class="tree-item-info">
-              <span class="tree-item-name">{playlist.name}</span>
-              <span class="tree-item-meta">{getTotalTrackCount(playlist)} {$t('playlist.tracks')}</span>
-            </div>
-            {#if !isUnavailable}
-              <div class="tree-item-actions">
-                <button
-                  class="favorite-btn"
-                  class:is-active={isFavorite}
-                  onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
-                  title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
-                >
-                  <Heart size={12} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
-                </button>
-                <button
-                  class="visibility-btn"
-                  class:is-hidden={isHidden}
-                  onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
-                  title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
-                >
-                  {#if isHidden}
-                    <EyeOff size={12} />
-                  {:else}
-                    <Eye size={12} />
+
+            <!-- Mobile/Grid View -->
+            {#if viewMode === 'grid'}
+              <div class="playlist-card">
+                <div class="card-header">
+                  <div class="icon">{getPlaylistIcon(item.playlist)}</div>
+                  <div class="title">{item.playlist.name}</div>
+                </div>
+                <div class="card-body">
+                  {#if item.playlist.tracks_count}
+                    <div class="stats">
+                      {item.playlist.tracks_count} tracks • 
+                      {(item.playlist.duration / 60).toFixed(1)} min
+                    </div>
                   {/if}
-                </button>
-                <button
-                  class="edit-btn"
-                  onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
-                  title={$t('playlist.editPlaylist')}
-                >
-                  <Pencil size={12} />
-                </button>
+                  
+                  <!-- Quick actions -->
+                  <div class="card-actions">
+                    <button 
+                      onclick={() => onPlaylistSelect?.(item.playlist.id)}
+                      class="play-btn"
+                    >
+                      ▶ Play
+                    </button>
+                    
+                    <button 
+                      onclick={() => toggleFavorite(item.playlist)}
+                      class={playlistSettings.get(item.playlist.id)?.is_favorite ? 'favorite' : ''}
+                    >
+                      {#if (playlistSettings.get(item.playlist.id)?.is_favorite ?? false)}★{:else}☆{/if}
+                    </button>
+                    
+                    <div class="more">
+                      <button onclick={() => openEditModal(item.playlist)}>✏️</button>
+                      <button onclick={(e) => handlePlaylistContextMenu(e, item.playlist)}>⋮</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             {/if}
           </div>
         {/if}
       {/each}
     </div>
-  {:else}
-    <!-- List View -->
-    <div class="list">
-      {#each displayPlaylists as playlist (playlist.id)}
-        {@const isHidden = playlistSettings.get(playlist.id)?.hidden}
-        {@const isFavorite = playlistSettings.get(playlist.id)?.is_favorite}
-        {@const stats = playlistStats.get(playlist.id)}
-        {@const localStatus = getLocalContentStatus(playlist.id)}
-        {@const isUnavailable = offlineStatus.isOffline && !isPlaylistAvailableOffline(playlist.id)}
-        <div
-          class="list-item"
-          class:hidden={isHidden}
-          class:unavailable={isUnavailable}
-          class:dragging={draggedId === playlist.id}
-          class:drag-over={dragOverId === playlist.id}
-          class:absorbing={absorbingPlaylistId === playlist.id}
-          draggable={sort === 'custom' && !isUnavailable}
-          ondragstart={(e) => !isUnavailable && handleDragStart(e, playlist.id)}
-          ondragover={(e) => !isUnavailable && handleDragOver(e, playlist.id)}
-          ondragleave={handleDragLeave}
-          ondrop={(e) => !isUnavailable && handleDrop(e, playlist.id)}
-          ondragend={handleDragEnd}
-          role="button"
-          tabindex="0"
-          onclick={() => onPlaylistSelect?.(playlist.id)}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPlaylistSelect?.(playlist.id); } }}
-          title={isUnavailable ? $t('offline.viewOnly') : undefined}
-        >
-          {#if sort === 'custom' && !isUnavailable}
-            {@const playlistIndex = displayPlaylistIndexMap.get(playlist.id) ?? 0}
-            <div class="reorder-controls horizontal">
-              <button
-                class="reorder-btn"
-                onclick={(e) => { e.stopPropagation(); movePlaylistUp(playlist.id); }}
-                disabled={playlistIndex === 0}
-                title="Move up"
-              >
-                <ChevronUp size={14} />
-              </button>
-              <div class="drag-handle">
-                <GripVertical size={16} />
-              </div>
-              <button
-                class="reorder-btn"
-                onclick={(e) => { e.stopPropagation(); movePlaylistDown(playlist.id); }}
-                disabled={playlistIndex === displayPlaylists.length - 1}
-                title="Move down"
-              >
-                <ChevronDown size={14} />
-              </button>
-            </div>
-          {/if}
-          <div class="artwork-small">
-            <PlaylistCollage artworks={playlist.images ?? []} size={48} />
-          </div>
-          <div class="info">
-            <span class="name">{playlist.name}</span>
-            <span class="meta">
-              {getTotalTrackCount(playlist)} {$t('playlist.tracks')}{#if getLocalTrackCount(playlist.id) > 0} <span class="local-count">({getLocalTrackCount(playlist.id)} {$t('playlist.local')})</span>{/if}
-              {#if playlist.duration > 0}
-                <span class="dot">.</span>
-                {formatDuration(playlist.duration)}
-              {/if}
-            </span>
-          </div>
-          {#if isUnavailable}
-            <span class="unavailable-badge" title={$t('offline.viewOnly')}>
-              <CloudOff size={14} />
-            </span>
-          {:else if localStatus === 'all_local'}
-            <span class="local-indicator all" title={$t('offline.allLocal')}>
-              <Wifi size={14} />
-            </span>
-          {:else if localStatus === 'some_local'}
-            <span class="local-indicator partial" title={$t('offline.someLocal')}>
-              <Cloud size={14} />
-            </span>
-          {/if}
-          {#if stats && stats.play_count > 0}
-            <span class="play-count-badge" title={ $t('playlist.playCount') }>
-              <ChartNoAxesColumn size={12} />
-              {stats.play_count}
-            </span>
-          {/if}
-          {#if !isUnavailable}
-            <button
-              class="favorite-btn"
-              class:is-active={isFavorite}
-              onclick={(e) => { e.stopPropagation(); toggleFavorite(playlist); }}
-              title={isFavorite ? $t('actions.removeFromFavorites') : $t('actions.addToFavorites')}
-            >
-              <Heart size={14} fill={isFavorite ? 'var(--accent-primary)' : 'none'} color={isFavorite ? 'var(--accent-primary)' : 'currentColor'} />
-            </button>
-            <button
-              class="visibility-btn"
-              class:is-hidden={isHidden}
-              onclick={(e) => { e.stopPropagation(); toggleHidden(playlist); }}
-              title={isHidden ? $t('playlist.showInSidebar') : $t('playlist.hideFromSidebar')}
-            >
-              {#if isHidden}
-                <EyeOff size={14} />
-              {:else}
-                <Eye size={14} />
-              {/if}
-            </button>
-            <button
-              class="edit-btn"
-              onclick={(e) => { e.stopPropagation(); openEditModal(playlist); }}
-              title={$t('playlist.editPlaylist')}
-            >
-              <Pencil size={14} />
-            </button>
-          {/if}
-        </div>
-      {/each}
-    </div>
-      {/if}
+
+    <!-- Scroll Progress Indicator -->
+    {#if totalHeight > playlistContainerHeight}
+      <div 
+        class="scroll-progress"
+        style={`height: ${(playlistScrollTop / (totalHeight - playlistContainerHeight) * 100).toFixed(2)}%;`}
+      ></div>
     {/if}
-    </ViewTransition>
-  {/if}
-</div>
-</ViewTransition>
+
+  </div>
+{/if}
 
 <!-- Folder Modal -->
 <FolderEditModal
@@ -2706,5 +2916,281 @@
     font-size: 12px;
     color: var(--text-muted);
     font-style: italic;
+  }
+
+  /* Virtual Scroll Container */
+  .virtual-scroll-container {
+    flex: 1;
+    overflow-y: auto;
+    position: relative;
+    scroll-behavior: smooth;
+  }
+
+  /* Virtual Items Layer - moves with transform for performance */
+  .virtual-items-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    will-change: transform;
+  }
+
+  /* Folder Items in Virtual Scroll */
+  .virtual-folder-item {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg-secondary);
+  }
+
+  .folder-header-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all 150ms ease;
+  }
+
+  .folder-header-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .folder-icon {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  /* Playlist Items */
+  .virtual-playlist-item {
+    position: relative;
+  }
+
+  /* Desktop List View */
+  .playlist-row.desktop {
+    display: grid;
+    grid-template-columns: 40px 1fr 80px;
+    align-items: center;
+    padding: 8px 12px;
+    gap: 12px;
+    transition: background 150ms ease;
+  }
+
+  .playlist-row.desktop:hover {
+    background: var(--bg-hover);
+  }
+
+  .playlist-icon-btn,
+  .desktop .playlist-icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+
+  .playlist-icon-btn:hover,
+  .desktop .playlist-icon:hover {
+    background: var(--bg-hover);
+    transform: scale(1.05);
+  }
+
+  .playlist-info,
+  .desktop .playlist-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .playlist-name,
+  .desktop .name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .playlist-meta,
+  .desktop .meta {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* Playlist Actions */
+  .playlist-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  .favorite-btn,
+  .desktop .quick-actions .favorite {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+
+  .favorite-btn:hover,
+  .desktop .quick-actions .favorite:hover {
+    color: #fbbf24;
+    transform: scale(1.1);
+  }
+
+  /* Dropdown Menu */
+  .dropdown-menu {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 150ms ease;
+  }
+
+  .playlist-row:hover .dropdown-menu,
+  .desktop:hover .more-menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .dropdown-menu button {
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  /* Grid/Card View */
+  .playlist-card {
+    position: relative;
+    padding: 12px;
+    transition: all 150ms ease;
+  }
+
+  .playlist-card:hover {
+    background: var(--bg-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .card-header .icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .card-header .title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .stats {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 4px 0;
+    border-top: 1px solid var(--bg-tertiary);
+    border-bottom: 1px solid var(--bg-tertiary);
+  }
+
+  .card-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4px;
+  }
+
+  .play-btn {
+    flex: 1;
+    padding: 6px 12px;
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+
+  .play-btn:hover {
+    background: var(--accent-primary);
+    opacity: 0.9;
+  }
+
+  /* Scroll Progress */
+  .scroll-progress {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 2px;
+    background: linear-gradient(to right, var(--accent-primary), #6366f1);
+    z-index: 100;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .playlist-row.desktop {
+      grid-template-columns: 40px 2fr 1fr;
+    }
+    
+    .desktop .meta {
+      display: none;
+    }
+  }
+
+  /* Empty State */
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 14px;
   }
 </style>
