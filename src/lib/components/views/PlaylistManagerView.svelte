@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { ArrowLeft, Funnel, ArrowUpDown, LayoutGrid, List, GripVertical, EyeOff, Eye, ChartNoAxesColumn, Play, Pencil, Search, X, Cloud, CloudOff, Wifi, Heart, Folder, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, Trash2, Star, Music, Disc, Library, Info, Rows3, Network } from 'lucide-svelte';
+  import { ArrowLeft, Funnel, ArrowUpDown, LayoutGrid, List, EyeOff, Eye, Pencil, Search, X, CloudOff, Heart, Folder, FolderPlus, FolderOpen, ChevronRight, ChevronDown, Star, Music, Disc, Library, Info, Rows3, Network } from 'lucide-svelte';
   import PlaylistCollage from '../PlaylistCollage.svelte';
   import PlaylistModal from '../PlaylistModal.svelte';
   import ViewTransition from '../ViewTransition.svelte';
@@ -75,7 +75,7 @@
   let playlistSettings = $state<Map<number, PlaylistSettings>>(new Map());
   let playlistStats = $state<Map<number, PlaylistStats>>(new Map());
   let localTrackCounts = $state<Map<number, number>>(new Map());
-  let pendingPlaylistsMap = $state<Map<number, import('$lib/stores/offlineStore').PendingPlaylist>>(new Map());
+  let .PendingPlaylists = $state<Map<number, import('$lib/stores/offlineStore').PendingPlaylist>>(new Map());
   let loading = $state(true);
   let spinnerFading = $state(false);
 
@@ -878,7 +878,6 @@
     closeFolderModal();
     onPlaylistsChanged?.();
   }
-</script>
 
  // === Virtual Scroll State ===
   
@@ -1028,7 +1027,6 @@
   });
 
 // === Virtual Scroll Helpers ===
-  
   function getFolderIcon(folder: PlaylistFolder) {
     if (folder.icon_type === 'custom' && folder.custom_image_path) return '🖼️';
     switch (folder.icon_preset) {
@@ -1055,9 +1053,9 @@
     console.log('Context menu for', playlist.name);
     // Implement context menu logic here
   }
-  </script>
 
-<ViewTransition duration={200} distance={12} direction="down">
+</script>
+
 <div class="playlist-manager">
   <button class="back-btn" onclick={onBack}>
     <ArrowLeft size={16} />
@@ -1251,18 +1249,19 @@
     </span>
   </div>
 
-  {#if sort === 'custom'}
-    <p class="drag-hint">{$t('playlist.dragPlaylists')}{#if !currentFolderId && folders.length > 0}, {$t('playlist.dropOntoFolder')}{/if}</p>
-  {/if}
+{#if sort === 'custom'}
+  <p class="drag-hint">{$t('playlist.dragPlaylists')}{#if !currentFolderId && folders.length > 0}, {$t('playlist.dropOntoFolder')}{/if}</p>
+{/if}
 
-  <!-- Content -->
-  {#if loading}
-    <div class="loading" class:fading={spinnerFading}>
-      <div class="spinner"></div>
-      <p>{$t('toast.loadingPlaylists')}</p>
-    </div>
-  {:else}
-    <ViewTransition duration={200} distance={12} direction="up">
+<!-- Content -->
+{#if loading}
+  <div class="loading" class:fading={spinnerFading}>
+    <div class="spinner"></div>
+    <p>{$t('toast.loadingPlaylists')}</p>
+  </div>
+{:else}
+  <ViewTransition duration={200} distance={12} direction="up">
+    
     <!-- Folders Section (only at root level, folder mode, non-tree) -->
     {#if folderMode && viewMode !== 'tree' && !currentFolderId && folders.length > 0}
       <div class="folders-section">
@@ -1280,6 +1279,14 @@
             <ChevronDown size={14} />
           {/if}
         </button>
+        <!-- Additional folder content would go here -->
+      </div>
+    {/if} <!-- Close the folderMode condition -->
+    
+    <!-- Other playlist content that was originally here would remain -->
+    
+  </ViewTransition>
+{/if} <!-- Close the loading condition -->
 
         {#if !foldersCollapsed}
           {#if viewMode === 'grid'}
@@ -1379,7 +1386,6 @@
           {/if}
         {/if}
       </div>
-    {/if}
 
     <!-- Playlists Section -->
 {#if loading}
